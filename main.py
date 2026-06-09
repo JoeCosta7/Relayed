@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import redis
 from database import Event, EventBase, engine, create_db_and_tables
 from sqlmodel import Session, select
+from metrics import EVENTS
 import uuid
+from prometheus_client import generate_latest,CONTENT_TYPE_LATEST
 
 r = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
@@ -32,9 +34,14 @@ async def create_event(event: EventBase):
         session.commit()
         session.refresh(newEvent)
     r.lpush("relay:events:pending", str(newEvent.id))
+    EVENTS.inc()
     return JSONResponse(status_code=202, content={"id": str(newEvent.id), "status": "queued"})
 
 @app.get("/v1/events")
 async def list_events():
     with Session(engine) as session:
         return session.exec(select(Event)).all()
+
+@app.get("/metrics")
+async def get_metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
