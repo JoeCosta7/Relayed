@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse, Response
 import redis
 from database import Event, EventBase, engine, create_db_and_tables
 from sqlmodel import Session, select
-from metrics import EVENTS
+from metrics import EVENTS, DELIVERED, FAILED, LAST_DELIVERY_DURATION, RETRYING
 import uuid
 from prometheus_client import generate_latest,CONTENT_TYPE_LATEST
 
@@ -44,4 +44,8 @@ async def list_events():
 
 @app.get("/metrics")
 async def get_metrics():
+    DELIVERED.set(int(r.get('metrics:delivered') or 0))
+    FAILED.set(int(r.get('metrics:failed') or 0))
+    RETRYING.set(int(r.get('metrics:retrying') or 0))
+    LAST_DELIVERY_DURATION.set(float(r.get('metrics:last_delivery_duration') or 0))
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

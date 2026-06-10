@@ -7,13 +7,13 @@ EVENTS = Counter(
     namespace='app'
 )
 
-DELIVERED = Counter(
+DELIVERED = Gauge(
     'delivered_events_total',
     'Total HTTP Events delivered',
     namespace='app'
 )
 
-FAILED = Counter(
+FAILED = Gauge(
     'failed_events_total',
     'Total HTTP Events failed',
     namespace='app'
@@ -25,9 +25,8 @@ RETRYING = Gauge(
     namespace='app'
 )
 
-DELIVERY_DURATION = Histogram(
-    'delivery_duration_seconds',
+LAST_DELIVERY_DURATION = Gauge(
+    'last_delivery_duration_seconds',
     'Time in seconds for a delivery',
     namespace='app',
-    buckets=[.01, .05, .1, .25, .5, 1, 2.5, 5],
 )

@@ -10,7 +10,7 @@ from sqlmodel import Session
 from database import Event
 import random
 from datetime import datetime, timedelta
-from metrics import DELIVERED, FAILED, RETRYING, DELIVERY_DURATION
+from metrics import DELIVERED, FAILED, RETRYING, LAST_DELIVERY_DURATION
 load_dotenv(Path(__file__).parent / ".env")
 
 
@@ -23,14 +23,12 @@ def retry(event : Event):
     #retry if failed initially
     event.attempts += 1
     event.status = 'retrying'
-    RETRYING.inc()
+    result = r.incr('metrics:retrying')
+    print(f"RETRY called - metrics:retrying now: {result}")
     delay = 1 * (2 ** event.attempts) + random.uniform(0, 1)
     event.next_attempt_at = datetime.now() + timedelta(seconds=delay)
     r.lpush("relay:events:pending", str(event.id))
-
-    
-
-
+    result = r.decr('metrics:retrying')
 
 def worker():
 # Worker loop for processing events
@@ -38,6 +36,7 @@ def worker():
         event = r.brpop("relay:events:pending", timeout=0)
         with Session(engine) as session:
             dbItem = session.exec(select(Event).where(Event.id == UUID(event[1]))).first()[0]
+            print(f"Processing event {dbItem.id}, status: {dbItem.status}, attempts: {dbItem.attempts}")
             payload = dbItem.payload
             destination_url = dbItem.destination_url
             
@@ -47,40 +46,47 @@ def worker():
                 continue
             
             try:
-                with DELIVERY_DURATION.time():
-                    response = httpx.post(destination_url, json=payload)
+                start = time.time()
+                response = httpx.post(destination_url, json=payload)
+                duration = time.time() - start
+                r.set('metrics:last_delivery_duration', duration)
 
             #Update event status based on response
                 if 200 <= response.status_code < 300:
-                    session.exec(update(Event).where(Event.id == UUID(event[1])).values(status='delivered'))
-                    DELIVERED.inc()
-                    if dbItem.status == 'retrying':    
-                        RETRYING.dec(1)
+                    was_retrying = dbItem.status == 'retrying'  # check BEFORE changing
+                    dbItem.status = 'delivered'
+                    session.add(dbItem)
+                    session.commit()
+                    r.incr('metrics:delivered')
+                    if was_retrying:
+                        r.decr('metrics:retrying')
                 else:
-                    session.exec(update(Event).where(Event.id == UUID(event[1])).values(status='failed'))
+                    if dbItem.attempts < 5:
+                        retry(dbItem)  # handles status = 'retrying' and metrics:retrying increment
+                        session.add(dbItem)
+                        session.commit()
+                    else:
+                        was_retrying = dbItem.status == 'retrying'
+                        dbItem.status = 'failed'
+                        session.add(dbItem)
+                        session.commit()
+                        r.incr('metrics:failed')
+                        if was_retrying:
+                            r.decr('metrics:retrying')
+            except Exception as e:
+                    print("Error sending event:", e)
                     if dbItem.attempts < 5:
                         retry(dbItem)
                         session.add(dbItem)
                         session.commit()
-
                     else:
-                        session.exec(update(Event).where(Event.id == UUID(event[1])).values(status='failed'))
-                        FAILED.inc()
-                        RETRYING.dec(1)
+                        was_retrying = dbItem.status == 'retrying'
+                        dbItem.status = 'failed'
+                        session.add(dbItem)
                         session.commit()
-            except Exception as e:
-                print("Error sending event:", e)
-                session.exec(update(Event).where(Event.id == event[1]).values(status='failed'))
-                if dbItem.attempts < 5:
-                    retry(dbItem)
-                    session.add(dbItem)
-                    session.commit()
-                else:
-                    session.exec(update(Event).where(Event.id == UUID(event[1])).values(status='failed'))
-                    FAILED.inc()
-                    RETRYING.dec(1)
-                    session.commit()
- 
+                        r.incr('metrics:failed')
+                        if was_retrying:
+                            r.decr('metrics:retrying')
 
 
 def main():
