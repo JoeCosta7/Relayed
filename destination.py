@@ -9,6 +9,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from uuid import UUID, uuid4
 from dotenv import load_dotenv
 from pathlib import Path
+import random
+import asyncio
 
 fail_mode = False
 
@@ -19,6 +21,9 @@ app = FastAPI()
 
 @app.post("/hook")
 async def receive_hook(payload: Dict[str, Any]):
+    await asyncio.sleep(2)
+    if random.random() < 0.25:
+        return JSONResponse(status_code=500, content={"message": "Simulated failure"})
     print("Received payload:", payload)
     if fail_mode:
         return JSONResponse(status_code=500, content={"message": "Simulated failure"})

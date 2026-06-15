@@ -20,15 +20,15 @@ r = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
 
 def retry(event : Event):
+    if event.attempts == 0:
+        r.incr('metrics:retrying')
     #retry if failed initially
     event.attempts += 1
     event.status = 'retrying'
-    result = r.incr('metrics:retrying')
-    print(f"RETRY called - metrics:retrying now: {result}")
+    print(f"RETRY called - metrics:retrying now: {event.attempts}")
     delay = 1 * (2 ** event.attempts) + random.uniform(0, 1)
     event.next_attempt_at = datetime.now() + timedelta(seconds=delay)
     r.lpush("relay:events:pending", str(event.id))
-    result = r.decr('metrics:retrying')
 
 def worker():
 # Worker loop for processing events
