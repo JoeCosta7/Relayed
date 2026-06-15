@@ -3,5 +3,4 @@ __pycache__
 .env
 uvicorn.log
 uvicorn_err.log
-docker-compose.yml
 Dockerfile
