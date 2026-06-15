@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 import redis
 
-load_dotenv(Path(__file__).parent / ".env")
+load_dotenv(Path(__file__).parent / ".env", override=False)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -25,7 +25,7 @@ class Event(EventBase, table=True):
     next_attempt_at: Optional[datetime] = Field(default=None)
     
 engine = create_engine(DATABASE_URL, echo=True)
-r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+r = redis.Redis(host='redis', port=6379, decode_responses=True)
 
 
 def create_db_and_tables():

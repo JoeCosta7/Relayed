@@ -8,7 +8,7 @@ from metrics import EVENTS, DELIVERED, FAILED, LAST_DELIVERY_DURATION, RETRYING
 import uuid
 from prometheus_client import generate_latest,CONTENT_TYPE_LATEST
 
-r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+r = redis.Redis(host='redis', port=6379, decode_responses=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

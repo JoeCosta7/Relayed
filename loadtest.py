@@ -21,7 +21,7 @@ async def call_api(payload : json, x: int, client: httpx.AsyncClient, sem: async
 async def main():
     print("Starting load test....")
     payload = {
-    "destination_url": "http://localhost:9000/hook",
+    "destination_url": "http://127.0.0.1:9000/hook",
     "event_type": "order.paid",
     "payload": {"order_id": 123}
     }
