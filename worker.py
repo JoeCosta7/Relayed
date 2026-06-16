@@ -11,6 +11,8 @@ from database import Event
 import random
 from datetime import datetime, timedelta
 from metrics import DELIVERED, FAILED, RETRYING, LAST_DELIVERY_DURATION
+import json
+import hmac
 load_dotenv(Path(__file__).parent / ".env", override=False)
 
 
@@ -33,7 +35,7 @@ def retry(event : Event):
 def worker():
 # Worker loop for processing events
     while True:
-        event = r.brpop("relay:events:pending", timeout=0)
+        event = r.brpop("relay:events:pending", timeout=30)
         with Session(engine) as session:
             dbItem = session.exec(select(Event).where(Event.id == UUID(event[1]))).first()[0]
             print(f"Processing event {dbItem.id}, status: {dbItem.status}, attempts: {dbItem.attempts}")
@@ -47,7 +49,10 @@ def worker():
             
             try:
                 start = time.time()
-                response = httpx.post(destination_url, json=payload)
+                secret = os.getenv("SECRET").encode()
+                byte_data = json.dumps(payload).encode("utf-8")
+                signature = hmac.new(secret, byte_data, digestmod="sha256").hexdigest()
+                response = httpx.post(destination_url, content=byte_data, headers={"X-Relay-Signature" : signature, "Content-Type" : "application/json"})
                 duration = time.time() - start
                 r.set('metrics:last_delivery_duration', duration)
 
