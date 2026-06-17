@@ -5,7 +5,7 @@ from pathlib import Path
 
 load_dotenv(find_dotenv(), override=False)
 print(os.getenv("API_KEY"))
-relayed = Relayed(os.getenv("API_KEY"), base_url="http://18.207.144.60")
+relayed = Relayed(os.getenv("API_KEY"), base_url="http://localhost:8000")
 
 
 response = relayed.send_event(
