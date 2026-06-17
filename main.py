@@ -7,12 +7,12 @@ import redis
 import secrets
 from database import Event, EventBase, engine, create_db_and_tables
 from sqlmodel import Session, select
-from metrics import EVENTS, DELIVERED, FAILED, LAST_DELIVERY_DURATION, RETRYING
+from metrics import EVENTS, DELIVERED, FAILED, RETRYING
 import uuid
 import os
 from prometheus_client import generate_latest,CONTENT_TYPE_LATEST
 
-r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+r = redis.Redis(host='redis', port=6379, decode_responses=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -68,5 +68,4 @@ async def get_metrics():
     DELIVERED.set(int(r.get('metrics:delivered') or 0))
     FAILED.set(int(r.get('metrics:failed') or 0))
     RETRYING.set(int(r.get('metrics:retrying') or 0))
-    LAST_DELIVERY_DURATION.set(float(r.get('metrics:last_delivery_duration') or 0))
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

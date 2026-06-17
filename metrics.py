@@ -25,8 +25,9 @@ RETRYING = Gauge(
     namespace='app'
 )
 
-LAST_DELIVERY_DURATION = Gauge(
-    'last_delivery_duration_seconds',
-    'Time in seconds for a delivery',
-    namespace='app',
+
+DELIVERY_DURATION = Histogram(
+    "delivery_duration_seconds",
+    "Time in seconds for the delivery as a histogram",
+    namespace='app'
 )

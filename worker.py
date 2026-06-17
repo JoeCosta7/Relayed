@@ -1,6 +1,7 @@
 import redis
 from dotenv import load_dotenv
 import time
+from prometheus_client import start_http_server
 import os
 from uuid import UUID
 from pathlib import Path
@@ -10,7 +11,7 @@ from sqlmodel import Session
 from database import Event
 import random
 from datetime import datetime, timedelta
-from metrics import DELIVERED, FAILED, RETRYING, LAST_DELIVERY_DURATION
+from metrics import DELIVERY_DURATION
 import json
 import hmac
 load_dotenv(Path(__file__).parent / ".env", override=False)
@@ -18,7 +19,7 @@ load_dotenv(Path(__file__).parent / ".env", override=False)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL, echo=True)
-r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+r = redis.Redis(host='redis', port=6379, decode_responses=True)
 
 
 def retry(event : Event):
@@ -34,8 +35,17 @@ def retry(event : Event):
 
 def worker():
 # Worker loop for processing events
+    start_http_server(8001)
     while True:
-        event = r.brpop("relay:events:pending", timeout=30)
+        try: 
+            event = r.brpop("relay:events:pending", timeout=30)
+            if event is None:
+                continue
+        except redis.exceptions.TimeoutError:
+            continue
+        except redis.exceptions.ConnectionError:
+            time.sleep(1)
+            continue
         with Session(engine) as session:
             dbItem = session.exec(select(Event).where(Event.id == UUID(event[1]))).first()[0]
             print(f"Processing event {dbItem.id}, status: {dbItem.status}, attempts: {dbItem.attempts}")
@@ -48,13 +58,11 @@ def worker():
                 continue
             
             try:
-                start = time.time()
                 secret = os.getenv("SECRET").encode()
                 byte_data = json.dumps(payload).encode("utf-8")
                 signature = hmac.new(secret, byte_data, digestmod="sha256").hexdigest()
-                response = httpx.post(destination_url, content=byte_data, headers={"X-Relay-Signature" : signature, "Content-Type" : "application/json"})
-                duration = time.time() - start
-                r.set('metrics:last_delivery_duration', duration)
+                with DELIVERY_DURATION.time():
+                    response = httpx.post(destination_url, content=byte_data, headers={"X-Relay-Signature" : signature, "Content-Type" : "application/json"})
 
             #Update event status based on response
                 if 200 <= response.status_code < 300:
@@ -92,6 +100,8 @@ def worker():
                         r.incr('metrics:failed')
                         if was_retrying:
                             r.decr('metrics:retrying')
+
+
 
 
 def main():
