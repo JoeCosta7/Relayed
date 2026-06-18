@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Depends, HTTPException, status, Header
+from fastapi import FastAPI, Depends, HTTPException, status, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, Response
 from typing import Annotated
@@ -7,8 +7,7 @@ import redis
 import secrets
 from database import Event, EventBase, engine, create_db_and_tables
 from sqlmodel import Session, select
-from metrics import EVENTS, DELIVERED, FAILED, RETRYING
-import uuid
+from metrics import EVENTS
 import os
 from prometheus_client import generate_latest,CONTENT_TYPE_LATEST
 
@@ -53,10 +52,19 @@ async def create_event(event: EventBase, credentials: Annotated[HTTPAuthorizatio
         session.add(newEvent)
         session.commit()
         session.refresh(newEvent)
-    r.set(f'idempotency:{idempotency_key}', str(newEvent.id), ex=86400)
-    r.lpush("relay:events:pending", str(newEvent.id))
-    EVENTS.inc()
-    return JSONResponse(status_code=202, content={"id": str(newEvent.id), "status": "queued"})
+        claimed = r.set(f'idempotency:{idempotency_key}', str(newEvent.id), ex=86400, nx=True)
+        # winner branch
+        if claimed:  
+            r.lpush("relay:events:pending", str(newEvent.id))
+            EVENTS.inc()
+            return JSONResponse(status_code=202, content={"id": str(newEvent.id), "status": "queued"})
+        #loser branch
+        else: 
+            session.delete(newEvent)
+            session.commit()
+            winner = r.get(f'idempotency:{idempotency_key}')
+            current_status = session.exec(select(Event.status).where(Event.id == winner)).first()
+            return JSONResponse(status_code=202, content={"id": winner, "status": current_status})
 
 @app.get("/v1/events")
 async def list_events():
@@ -65,7 +73,4 @@ async def list_events():
 
 @app.get("/metrics")
 async def get_metrics():
-    DELIVERED.set(int(r.get('metrics:delivered') or 0))
-    FAILED.set(int(r.get('metrics:failed') or 0))
-    RETRYING.set(int(r.get('metrics:retrying') or 0))
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

@@ -7,13 +7,13 @@ EVENTS = Counter(
     namespace='app'
 )
 
-DELIVERED = Gauge(
+DELIVERED = Counter(
     'delivered_events_total',
     'Total HTTP Events delivered',
     namespace='app'
 )
 
-FAILED = Gauge(
+FAILED = Counter(
     'failed_events_total',
     'Total HTTP Events failed',
     namespace='app'
