@@ -12,6 +12,16 @@ load_dotenv(Path(__file__).parent / ".env", override=False)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+class DeadLetter(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    event_id: UUID = Field(foreign_key="event.id")
+    attempts : int
+    status_code : Optional[int] = None
+    response_body: Optional[str] = None
+    error_message: Optional[str] = None
+    failed_at : datetime = Field(default_factory=datetime.now)
+    replayed_at: Optional[datetime] = None
+
 class EventBase(SQLModel):
     destination_url: str
     event_type: str

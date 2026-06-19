@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 from sqlalchemy import create_engine, select
 from sqlmodel import Session
-from database import Event
+from database import Event, DeadLetter
 import random
 from datetime import datetime, timedelta
 from metrics import DELIVERY_DURATION, RETRYING, DELIVERED, FAILED
@@ -77,7 +77,14 @@ def worker():
                         else:
                             was_retrying = dbItem.status == 'retrying'
                             dbItem.status = 'failed'
+                            failure = DeadLetter(
+                                event_id = dbItem.id,
+                                attempts = dbItem.attempts,
+                                status_code = response.status_code,
+                                response_body = response.text,
+                            )
                             session.add(dbItem)
+                            session.add(failure)
                             session.commit()
                             FAILED.inc()
                             if was_retrying:
@@ -91,7 +98,13 @@ def worker():
                         else:
                             was_retrying = dbItem.status == 'retrying'
                             dbItem.status = 'failed'
+                            failure = DeadLetter(
+                                event_id = dbItem.id,
+                                attempts = dbItem.attempts,
+                                error_message = str(e)
+                            )
                             session.add(dbItem)
+                            session.add(failure)
                             session.commit()
                             FAILED.inc()
                             if was_retrying:
