@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 from database import Event, DeadLetter
 import random
 from datetime import datetime, timedelta
-from metrics import DELIVERY_DURATION, RETRYING, DELIVERED, FAILED
+from worker_metrics import DELIVERY_DURATION, RETRYING, DELIVERED, FAILED
 import json
 import hmac
 load_dotenv(Path(__file__).parent / ".env", override=False)

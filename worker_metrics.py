@@ -1,12 +1,5 @@
 from prometheus_client import Counter, Gauge, Histogram
 
-
-EVENTS = Counter(
-    'events_total',
-    'Total HTTP Events received',
-    namespace='app'
-)
-
 DELIVERED = Counter(
     'delivered_events_total',
     'Total HTTP Events delivered',

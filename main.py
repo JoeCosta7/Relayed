@@ -7,7 +7,7 @@ import redis
 import secrets
 from database import Event, EventBase, DeadLetter, engine, create_db_and_tables
 from sqlmodel import Session, select
-from metrics import EVENTS
+from app_metrics import EVENTS
 import os
 from uuid import UUID
 from datetime import datetime
@@ -85,8 +85,19 @@ async def list_dead_letter_events(_: Annotated[None, Depends(verify_api_key)]):
 
 @app.post("/v1/deadletter/{dl_id}/replay")
 async def replay_dead_letter(dl_id: UUID, _: Annotated[None, Depends(verify_api_key)]):
+
     with Session(engine) as session:
         deadletter = session.exec(select(DeadLetter).where(DeadLetter.id == dl_id)).first()
+        if deadletter is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"DeadLetter ID: {dl_id} does not exist"
+            )
+        if deadletter.replayed_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"DeadLetter Event with ID: {dl_id} was already replayed"
+            )
         associated_event = session.exec(select(Event).where(Event.id == deadletter.event_id)).first()
         associated_event.status = 'pending'
         associated_event.attempts = 0

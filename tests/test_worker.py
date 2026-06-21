@@ -99,7 +99,6 @@ def test_exception_during_delivery_over_attempt_limit():
         session.commit()
         session.refresh(event)
         event_id = event.id
-
     process_event(str(event_id))
     
     

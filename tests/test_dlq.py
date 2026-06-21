@@ -65,7 +65,27 @@ def test_replay_endpoint_resets_state():
 
             updated_dl = session.get(DeadLetter, dl_id)
             assert updated_dl.replayed_at is not None 
-        
+
+def test_replay_nonexistent_dl_returns_404():
+    nonexistent_id = uuid.uuid4()
+    response = client.post(f"/v1/deadletter/{nonexistent_id}/replay", headers=auth_headers)
+    assert response.status_code == 404
+
+def test_replay_already_replayed_returns_409():
+    with Session(engine) as session:
+        event = Event(destination_url="...", event_type="test", payload={}, status="failed", attempts=5)
+        session.add(event)
+        session.commit()
+        session.refresh(event)
+            
+        dl = DeadLetter(event_id=event.id, attempts=5, status_code=500, replayed_at=datetime.now())
+        session.add(dl)
+        session.commit()
+        session.refresh(dl)
+        dl_id = dl.id 
+
+    response = client.post(f"/v1/deadletter/{dl_id}/replay", headers=auth_headers)
+    assert response.status_code == 409
 
 
 
