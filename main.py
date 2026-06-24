@@ -13,7 +13,9 @@ from uuid import UUID
 from datetime import datetime
 from prometheus_client import generate_latest,CONTENT_TYPE_LATEST
 
-r = redis.Redis(host='redis', port=6379, decode_responses=True)
+redis_host = os.getenv("REDIS_HOST", "redis")
+redis_port = int(os.getenv("REDIS_PORT", "6379"))
+r = redis.Redis(host=redis_host, port=redis_port)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

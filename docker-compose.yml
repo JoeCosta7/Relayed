@@ -1,6 +1,8 @@
 services:
   postgres:
     image: postgres
+    volumes:
+      - ./init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: Relayed

@@ -19,7 +19,9 @@ load_dotenv(Path(__file__).parent / ".env", override=False)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL, echo=True)
-r = redis.Redis(host='redis', port=6379, decode_responses=True)
+redis_host = os.getenv("REDIS_HOST", "redis")
+redis_port = int(os.getenv("REDIS_PORT", "6379"))
+r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
 
 
 def retry(event : Event):
