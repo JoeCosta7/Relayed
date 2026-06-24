@@ -9,7 +9,7 @@ from database import Event, EventBase, DeadLetter, engine, create_db_and_tables
 from sqlmodel import Session, select
 from app_metrics import EVENTS
 import os
-from uuid import UUID, uuid
+from uuid import UUID
 from datetime import datetime
 from prometheus_client import generate_latest,CONTENT_TYPE_LATEST
 
