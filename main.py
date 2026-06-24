@@ -9,13 +9,13 @@ from database import Event, EventBase, DeadLetter, engine, create_db_and_tables
 from sqlmodel import Session, select
 from app_metrics import EVENTS
 import os
-from uuid import UUID
+from uuid import UUID, uuid
 from datetime import datetime
 from prometheus_client import generate_latest,CONTENT_TYPE_LATEST
 
 redis_host = os.getenv("REDIS_HOST", "redis")
 redis_port = int(os.getenv("REDIS_PORT", "6379"))
-r = redis.Redis(host=redis_host, port=redis_port)
+r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
