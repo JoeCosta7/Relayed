@@ -1,7 +1,9 @@
 from dotenv import load_dotenv
 import os
 from pathlib import Path
-load_dotenv(Path(__file__).parent / ".env.test", override=True)
+if not os.getenv("CI"):
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env.test", override=True)
 
 import pytest
 from sqlmodel import Session, SQLModel
