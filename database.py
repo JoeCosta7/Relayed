@@ -21,6 +21,7 @@ class DeadLetter(SQLModel, table=True):
     error_message: Optional[str] = None
     failed_at : datetime = Field(default_factory=datetime.now)
     replayed_at: Optional[datetime] = None
+    customer_id : UUID = Field(foreign_key="customer.id", index=True)
 
 class EventBase(SQLModel):
     destination_url: str
@@ -33,7 +34,28 @@ class Event(EventBase, table=True):
     created_at: datetime = Field(default_factory=datetime.now)
     attempts: int = Field(default = 0)
     next_attempt_at: Optional[datetime] = Field(default=None)
-    
+    customer_id : UUID = Field(foreign_key="customer.id", index=True)
+
+class Customer(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    name: str
+    api_key_hash: str = Field(index=True, unique=True)
+    webhook_secret : str
+    created_at: datetime = Field(default_factory=datetime.now)
+
+    # Request: what the admin sends
+class CustomerCreate(SQLModel):
+    name: str
+
+# Response: what the admin gets back, ONCE
+class CustomerCreated(SQLModel):
+    id: UUID
+    name: str
+    api_key: str          # plaintext, shown only here
+    webhook_secret: str   # plaintext, shown only here
+    created_at: datetime
+
+
 engine = create_engine(DATABASE_URL, echo=True)
 r = redis.Redis(host='redis', port=6379, decode_responses=True)
 

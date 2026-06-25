@@ -5,12 +5,13 @@ from fastapi.responses import JSONResponse, Response
 from typing import Annotated
 import redis
 import secrets
-from database import Event, EventBase, DeadLetter, engine, create_db_and_tables
+from database import Event, EventBase, DeadLetter, Customer, CustomerCreated, CustomerCreate, engine, create_db_and_tables
 from sqlmodel import Session, select
 from app_metrics import EVENTS
 import os
 from uuid import UUID
 from datetime import datetime
+import hashlib
 from prometheus_client import generate_latest,CONTENT_TYPE_LATEST
 
 redis_host = os.getenv("REDIS_HOST", "redis")
@@ -31,10 +32,29 @@ async def root():
     return {"message": "Hello World"}
 
 async def verify_api_key(credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)]):
-    current_API_key_bytes = credentials.credentials.encode("utf8")
-    correct_API_key_bytes = os.getenv("API_KEY").encode("utf8")
-    is_correct_api_key = secrets.compare_digest(current_API_key_bytes, correct_API_key_bytes)
-    if not is_correct_api_key:
+    with Session(engine) as session:
+        incoming_hash = hashlib.sha256(credentials.credentials.encode("utf8")).hexdigest()
+        customer = session.exec(select(Customer).where(Customer.api_key_hash == incoming_hash)).first()
+    if customer is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect API KEY",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return customer
+
+
+async def verify_admin_key(credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)]):
+    incoming_admin_key_bytes = credentials.credentials.encode("utf8")
+    correct_admin_key = os.getenv("ADMIN_API_KEY")
+    if not correct_admin_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ADMIN_API_KEY not configured",
+        )
+    correct_admin_key_bytes = correct_admin_key.encode("utf8")
+    is_correct_admin_hash = secrets.compare_digest(incoming_admin_key_bytes, correct_admin_key_bytes)
+    if not is_correct_admin_hash:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect API KEY",
@@ -42,8 +62,9 @@ async def verify_api_key(credentials: Annotated[HTTPAuthorizationCredentials, De
         )
 
 
+
 @app.post("/v1/events")
-async def create_event(event: EventBase, _: Annotated[None, Depends(verify_api_key)], idempotency_key: Annotated[str, Header()]):
+async def create_event(event: EventBase, current_customer: Annotated[Customer, Depends(verify_api_key)], idempotency_key: Annotated[str, Header()]):
     
     existing_event_id = r.get(f'idempotency:{idempotency_key}')
     if existing_event_id:
@@ -54,6 +75,7 @@ async def create_event(event: EventBase, _: Annotated[None, Depends(verify_api_k
         destination_url=event.destination_url,
         event_type=event.event_type,
         payload=event.payload,
+        customer_id = current_customer.id
     )
     with Session(engine) as session:
         session.add(newEvent)
@@ -74,22 +96,22 @@ async def create_event(event: EventBase, _: Annotated[None, Depends(verify_api_k
             return JSONResponse(status_code=202, content={"id": winner, "status": current_status})
 
 @app.get("/v1/events")
-async def list_events(_: Annotated[None, Depends(verify_api_key)]):
+async def list_events(current_customer: Annotated[None, Depends(verify_api_key)]):
     with Session(engine) as session:
-        return session.exec(select(Event)).all()
+        return session.exec(select(Event).where(Event.customer_id == current_customer.id)).all()
 
 
 @app.get("/v1/deadletter")
-async def list_dead_letter_events(_: Annotated[None, Depends(verify_api_key)]):
+async def list_dead_letter_events(current_customer: Annotated[Customer, Depends(verify_api_key)]):
     with Session(engine) as session:
         #finds ones that haven't been resolved
-        return session.exec(select(DeadLetter).where(DeadLetter.replayed_at == None)).all()
+        return session.exec(select(DeadLetter).where(DeadLetter.replayed_at == None, DeadLetter.customer_id == current_customer.id)).all()
 
 @app.post("/v1/deadletter/{dl_id}/replay")
-async def replay_dead_letter(dl_id: UUID, _: Annotated[None, Depends(verify_api_key)]):
+async def replay_dead_letter(dl_id: UUID, current_customer: Annotated[Customer, Depends(verify_api_key)]):
 
     with Session(engine) as session:
-        deadletter = session.exec(select(DeadLetter).where(DeadLetter.id == dl_id)).first()
+        deadletter = session.exec(select(DeadLetter).where(DeadLetter.id == dl_id, DeadLetter.customer_id == current_customer.id)).first()
         if deadletter is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -108,6 +130,30 @@ async def replay_dead_letter(dl_id: UUID, _: Annotated[None, Depends(verify_api_
         session.commit()
         r.lpush("relay:events:pending", str(associated_event.id))
         return f'Retrying event {associated_event.id}'
+
+@app.post("/v1/customers", response_model=CustomerCreated)
+async def create_customer( payload: CustomerCreate, _: Annotated[None, Depends(verify_admin_key)], ):
+    api_key = secrets.token_urlsafe(32)
+    webhook_secret = secrets.token_urlsafe(32)
+    api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    
+    customer = Customer(
+        name=payload.name,
+        api_key_hash=api_key_hash,
+        webhook_secret=webhook_secret,
+    )
+    with Session(engine) as session:
+        session.add(customer)
+        session.commit()
+        session.refresh(customer)
+    
+    return CustomerCreated(
+        id=customer.id,
+        name=customer.name,
+        api_key=api_key,
+        webhook_secret=webhook_secret,
+        created_at=customer.created_at,
+    )
 
 @app.get("/metrics")
 async def get_metrics():

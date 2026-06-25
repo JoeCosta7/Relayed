@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 from sqlalchemy import create_engine
 from sqlmodel import Session, select
-from database import Event, DeadLetter
+from database import Event, DeadLetter, Customer
 import random
 from datetime import datetime, timedelta
 from worker_metrics import DELIVERY_DURATION, RETRYING, DELIVERED, FAILED
@@ -38,6 +38,13 @@ def retry(event : Event):
 def process_event(event_id_str : str):
     with Session(engine) as session:
         dbItem = session.exec(select(Event).where(Event.id == UUID(event_id_str))).first()
+        if dbItem is None:
+            print(f"Event {event_id_str} not found — skipping")
+            return
+        customer = session.exec(select(Customer).where(Customer.id == dbItem.customer_id)).first()
+        if customer is None:
+            print(f"Event {dbItem.id} has no customer — skipping")
+            return
         print(f"Processing event {dbItem.id}, status: {dbItem.status}, attempts: {dbItem.attempts}")
         payload = dbItem.payload
         destination_url = dbItem.destination_url
@@ -46,7 +53,7 @@ def process_event(event_id_str : str):
             time.sleep(0.5)
             return
         try:
-            secret = os.getenv("SECRET").encode()
+            secret = customer.webhook_secret.encode()
             byte_data = json.dumps(payload).encode("utf-8")
             signature = hmac.new(secret, byte_data, digestmod="sha256").hexdigest()
             with DELIVERY_DURATION.time():
@@ -73,6 +80,7 @@ def process_event(event_id_str : str):
                         attempts = dbItem.attempts,
                         status_code = response.status_code,
                         response_body = response.text,
+                        customer_id = dbItem.customer_id
                     )
                     session.add(dbItem)
                     session.add(failure)
@@ -92,7 +100,8 @@ def process_event(event_id_str : str):
                     failure = DeadLetter(
                         event_id = dbItem.id,
                         attempts = dbItem.attempts,
-                        error_message = str(e)
+                        error_message = str(e),
+                        customer_id = dbItem.customer_id
                     )
                     session.add(dbItem)
                     session.add(failure)
