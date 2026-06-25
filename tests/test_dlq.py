@@ -8,28 +8,27 @@ from main import app
 from main import r
 
 client = TestClient(app)
-api_key = os.getenv("API_KEY")
-auth_headers = {"Authorization": f"Bearer {api_key}"}
 
-
-def test_filter_replayed_entries():
+def test_filter_replayed_entries(test_customer):
+    api_key = test_customer["api_key"]
+    auth_headers = {"Authorization": f"Bearer {api_key}"}
     with Session(engine) as session:
-        event1 = Event(destination_url="...", event_type="test", payload={}, status="failed", attempts=5)
+        event1 = Event(destination_url="...", event_type="test", payload={}, status="failed", attempts=5, customer_id = test_customer["customer"].id)
         session.add(event1)
         session.commit()
         session.refresh(event1)
         
-        dl1 = DeadLetter(event_id=event1.id, attempts=5, status_code=500, replayed_at=datetime.now())
+        dl1 = DeadLetter(event_id=event1.id, attempts=5, status_code=500, replayed_at=datetime.now(), customer_id = test_customer["customer"].id)
         session.add(dl1)
         session.commit()
         session.refresh(dl1)
 
-        event2 = Event(destination_url="...", event_type="test", payload={}, status="failed", attempts=5)
+        event2 = Event(destination_url="...", event_type="test", payload={}, status="failed", attempts=5, customer_id = test_customer["customer"].id)
         session.add(event2)
         session.commit()
         session.refresh(event2)
         
-        dl2 = DeadLetter(event_id=event2.id, attempts=5, status_code=500, replayed_at=None)
+        dl2 = DeadLetter(event_id=event2.id, attempts=5, status_code=500, replayed_at=None, customer_id = test_customer["customer"].id)
         session.add(dl2)
         session.commit()
         session.refresh(dl2)
@@ -42,14 +41,16 @@ def test_filter_replayed_entries():
 
 
 
-def test_replay_endpoint_resets_state():
+def test_replay_endpoint_resets_state(test_customer):
+    api_key = test_customer["api_key"]
+    auth_headers = {"Authorization": f"Bearer {api_key}"}
     with Session(engine) as session:
-        event = Event(destination_url="...", event_type="test", payload={}, status="failed", attempts=5)
+        event = Event(destination_url="...", event_type="test", payload={}, status="failed", attempts=5, customer_id = test_customer["customer"].id)
         session.add(event)
         session.commit()
         session.refresh(event)
             
-        dl = DeadLetter(event_id=event.id, attempts=5, status_code=500, replayed_at=None)
+        dl = DeadLetter(event_id=event.id, attempts=5, status_code=500, replayed_at=None, customer_id = test_customer["customer"].id)
         session.add(dl)
         session.commit()
         session.refresh(dl)
@@ -66,19 +67,23 @@ def test_replay_endpoint_resets_state():
             updated_dl = session.get(DeadLetter, dl_id)
             assert updated_dl.replayed_at is not None 
 
-def test_replay_nonexistent_dl_returns_404():
+def test_replay_nonexistent_dl_returns_404(test_customer):
+    api_key = test_customer["api_key"]
+    auth_headers = {"Authorization": f"Bearer {api_key}"}
     nonexistent_id = uuid.uuid4()
     response = client.post(f"/v1/deadletter/{nonexistent_id}/replay", headers=auth_headers)
     assert response.status_code == 404
 
-def test_replay_already_replayed_returns_409():
+def test_replay_already_replayed_returns_409(test_customer):
+    api_key = test_customer["api_key"]
+    auth_headers = {"Authorization": f"Bearer {api_key}"}
     with Session(engine) as session:
-        event = Event(destination_url="...", event_type="test", payload={}, status="failed", attempts=5)
+        event = Event(destination_url="...", event_type="test", payload={}, status="failed", attempts=5, customer_id = test_customer["customer"].id)
         session.add(event)
         session.commit()
         session.refresh(event)
             
-        dl = DeadLetter(event_id=event.id, attempts=5, status_code=500, replayed_at=datetime.now())
+        dl = DeadLetter(event_id=event.id, attempts=5, status_code=500, replayed_at=datetime.now(), customer_id = test_customer["customer"].id)
         session.add(dl)
         session.commit()
         session.refresh(dl)

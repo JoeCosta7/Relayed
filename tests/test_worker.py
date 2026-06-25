@@ -7,11 +7,11 @@ from database import Event, DeadLetter
 from worker import process_event
 
 @respx.mock
-def test_successful_delivery():
+def test_successful_delivery(test_customer):
     respx.post("https://example.com/webhook").mock(return_value=httpx.Response(200))
 
     with Session(engine) as session:
-        event = Event(destination_url="https://example.com/webhook", event_type="test", payload={}, status="pending", attempts=0)
+        event = Event(destination_url="https://example.com/webhook", event_type="test", payload={}, status="pending", attempts=0, customer_id = test_customer["customer"].id)
         session.add(event)
         session.commit()
         session.refresh(event)
@@ -24,11 +24,11 @@ def test_successful_delivery():
         assert updated_event.status == "delivered"
 
 @respx.mock
-def test_failed_delivery_under_attempt_limit():
+def test_failed_delivery_under_attempt_limit(test_customer):
     respx.post("https://example.com/webhook").mock(return_value=httpx.Response(500, text="Server Error"))
 
     with Session(engine) as session:
-        event = Event(destination_url="https://example.com/webhook", event_type="test", payload={}, status="pending", attempts=0)
+        event = Event(destination_url="https://example.com/webhook", event_type="test", payload={}, status="pending", attempts=0, customer_id = test_customer["customer"].id)
         session.add(event)
         session.commit()
         session.refresh(event)
@@ -46,11 +46,11 @@ def test_failed_delivery_under_attempt_limit():
         assert dl is None
 
 @respx.mock
-def test_failed_delivery_over_attempt_limit():
+def test_failed_delivery_over_attempt_limit(test_customer):
     respx.post("https://example.com/webhook").mock(return_value=httpx.Response(500, text="Server Error"))
 
     with Session(engine) as session:
-        event = Event(destination_url="https://example.com/webhook", event_type="test", payload={}, status="retrying", attempts=5)
+        event = Event(destination_url="https://example.com/webhook", event_type="test", payload={}, status="retrying", attempts=5, customer_id = test_customer["customer"].id)
         session.add(event)
         session.commit()
         session.refresh(event)
@@ -68,11 +68,11 @@ def test_failed_delivery_over_attempt_limit():
         assert dl.response_body == "Server Error"
 
 @respx.mock
-def test_exception_during_delivery_under_attempt_limit():
+def test_exception_during_delivery_under_attempt_limit(test_customer):
     respx.post("https://example.com/webhook").mock(side_effect=httpx.ConnectError("Connection Refused"))
 
     with Session(engine) as session:
-        event = Event(destination_url="https://example.com/webhook", event_type="test", payload={}, status="pending", attempts=0)
+        event = Event(destination_url="https://example.com/webhook", event_type="test", payload={}, status="pending", attempts=0, customer_id = test_customer["customer"].id)
         session.add(event)
         session.commit()
         session.refresh(event)
@@ -90,11 +90,11 @@ def test_exception_during_delivery_under_attempt_limit():
         assert dl is None
 
 @respx.mock
-def test_exception_during_delivery_over_attempt_limit():
+def test_exception_during_delivery_over_attempt_limit(test_customer):
     respx.post("https://example.com/webhook").mock(side_effect=httpx.ConnectError("Connection Refused"))
 
     with Session(engine) as session:
-        event = Event(destination_url="https://example.com/webhook", event_type="test", payload={}, status="retrying", attempts=5)
+        event = Event(destination_url="https://example.com/webhook", event_type="test", payload={}, status="retrying", attempts=5, customer_id = test_customer["customer"].id)
         session.add(event)
         session.commit()
         session.refresh(event)

@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres
     volumes:
-      - ./init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql
+      - ./init-test-setup.sql:/docker-entrypoint-initdb.d/init-test-setup.sql
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: Relayed
@@ -49,6 +49,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    volumes:
+      - .:/app
     container_name: app
     restart: unless-stopped
     ports:

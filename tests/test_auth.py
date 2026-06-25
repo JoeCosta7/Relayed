@@ -14,8 +14,8 @@ def test_wrong_api_key():
     assert response.status_code == 401
 
 
-def test_correct_api_key():
-    correct = os.getenv("API_KEY")
+def test_correct_api_key(test_customer):
+    correct = test_customer["api_key"]
     response = client.get("/v1/events", headers={"Authorization": f"Bearer {correct}"})
     assert response.status_code == 200
 

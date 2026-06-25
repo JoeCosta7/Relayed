@@ -65,12 +65,13 @@ async def verify_admin_key(credentials: Annotated[HTTPAuthorizationCredentials, 
 
 @app.post("/v1/events")
 async def create_event(event: EventBase, current_customer: Annotated[Customer, Depends(verify_api_key)], idempotency_key: Annotated[str, Header()]):
-    
-    existing_event_id = r.get(f'idempotency:{idempotency_key}')
-    if existing_event_id:
+    idempotency_redis_key = f'idempotency:{current_customer.id}:{idempotency_key}'
+    existing_raw_key = r.get(idempotency_redis_key)
+    if existing_raw_key:
+        existing_event_id = UUID(existing_raw_key)
         with Session(engine) as session:
-            existing_status = session.exec(select(Event.status).where(Event.id == existing_event_id)).first()
-            return JSONResponse(status_code=202, content={"id": existing_event_id, "status": existing_status})
+            existing_status = session.exec(select(Event.status).where(Event.id == existing_event_id, Event.customer_id == current_customer.id)).first()
+            return JSONResponse(status_code=202, content={"id": str(existing_event_id), "status": existing_status})
     newEvent = Event(
         destination_url=event.destination_url,
         event_type=event.event_type,
@@ -81,7 +82,7 @@ async def create_event(event: EventBase, current_customer: Annotated[Customer, D
         session.add(newEvent)
         session.commit()
         session.refresh(newEvent)
-        claimed = r.set(f'idempotency:{idempotency_key}', str(newEvent.id), ex=86400, nx=True)
+        claimed = r.set(idempotency_redis_key, str(newEvent.id), ex=86400, nx=True)
         # winner branch
         if claimed:  
             r.lpush("relay:events:pending", str(newEvent.id))
@@ -91,9 +92,15 @@ async def create_event(event: EventBase, current_customer: Annotated[Customer, D
         else: 
             session.delete(newEvent)
             session.commit()
-            winner = r.get(f'idempotency:{idempotency_key}')
-            current_status = session.exec(select(Event.status).where(Event.id == winner)).first()
-            return JSONResponse(status_code=202, content={"id": winner, "status": current_status})
+            existing_raw_key = r.get(idempotency_redis_key)
+            if not existing_raw_key:
+                raise HTTPException(
+                    status_code=500,
+                    detail="idempotency race resolution failed: winner key not found",
+                )
+            winner = UUID(existing_raw_key.decode())
+            current_status = session.exec(select(Event.status).where(Event.id == winner, Event.customer_id == current_customer.id)).first()
+            return JSONResponse(status_code=202, content={"id": str(winner), "status": current_status})
 
 @app.get("/v1/events")
 async def list_events(current_customer: Annotated[None, Depends(verify_api_key)]):
@@ -133,14 +140,14 @@ async def replay_dead_letter(dl_id: UUID, current_customer: Annotated[Customer, 
 
 @app.post("/v1/customers", response_model=CustomerCreated)
 async def create_customer( payload: CustomerCreate, _: Annotated[None, Depends(verify_admin_key)], ):
-    api_key = secrets.token_urlsafe(32)
-    webhook_secret = secrets.token_urlsafe(32)
-    api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    customer_api_key = secrets.token_urlsafe(32)
+    customer_webhook_secret = secrets.token_urlsafe(32)
+    customer_api_key_hash = hashlib.sha256(customer_api_key.encode()).hexdigest()
     
     customer = Customer(
         name=payload.name,
-        api_key_hash=api_key_hash,
-        webhook_secret=webhook_secret,
+        api_key_hash=customer_api_key_hash,
+        webhook_secret=customer_webhook_secret,
     )
     with Session(engine) as session:
         session.add(customer)
@@ -150,8 +157,8 @@ async def create_customer( payload: CustomerCreate, _: Annotated[None, Depends(v
     return CustomerCreated(
         id=customer.id,
         name=customer.name,
-        api_key=api_key,
-        webhook_secret=webhook_secret,
+        api_key=customer_api_key,
+        webhook_secret=customer_webhook_secret,
         created_at=customer.created_at,
     )
 
