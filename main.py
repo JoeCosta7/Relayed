@@ -1,17 +1,19 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, status, Header
+from fastapi import FastAPI, Depends, HTTPException, status, Header, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, Response
 from typing import Annotated
 import redis
 import secrets
-from database import Event, EventBase, DeadLetter, Customer, CustomerCreated, CustomerCreate, engine, create_db_and_tables
+from database import Event, EventBase, DeadLetter, Customer, CustomerCreated, CustomerCreate, Subscription,  SubscriptionCreate, SubscriptionCreated, SubscriptionRead, Delivery, SubscriptionStatusEnum, engine, create_db_and_tables
 from sqlmodel import Session, select
 from app_metrics import EVENTS
 import os
 from uuid import UUID
 from datetime import datetime
 import hashlib
+import logging
+
 from prometheus_client import generate_latest,CONTENT_TYPE_LATEST
 
 redis_host = os.getenv("REDIS_HOST", "redis")
@@ -20,11 +22,12 @@ r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    #build db on start
     create_db_and_tables()
     yield
 
 app = FastAPI(lifespan=lifespan)
-
+logger = logging.getLogger(__name__)
 security = HTTPBearer()
 
 @app.get("/")
@@ -65,48 +68,47 @@ async def verify_admin_key(credentials: Annotated[HTTPAuthorizationCredentials, 
 
 @app.post("/v1/events")
 async def create_event(event: EventBase, current_customer: Annotated[Customer, Depends(verify_api_key)], idempotency_key: Annotated[str, Header()]):
+    #idempotency check, make sure not used beofre
     idempotency_redis_key = f'idempotency:{current_customer.id}:{idempotency_key}'
-    existing_raw_key = r.get(idempotency_redis_key)
-    if existing_raw_key:
-        existing_event_id = UUID(existing_raw_key)
+    claimed = r.set(idempotency_redis_key, "claimed", ex=86400, nx=True)
+    #cache hit, already exists
+    if not claimed:
+        cached_event_id = UUID(r.get(idempotency_redis_key))
         with Session(engine) as session:
-            existing_status = session.exec(select(Event.status).where(Event.id == existing_event_id, Event.customer_id == current_customer.id)).first()
-            return JSONResponse(status_code=202, content={"id": str(existing_event_id), "status": existing_status})
-    newEvent = Event(
-        destination_url=event.destination_url,
-        event_type=event.event_type,
-        payload=event.payload,
-        customer_id = current_customer.id
-    )
+            deliveries = session.exec(select(Delivery).where(Delivery.event_id == cached_event_id, Delivery.customer_id == current_customer.id,)).all()
+            return JSONResponse(status_code=202, content={"event_id": str(cached_event_id), "delivery_ids": [str(d.id) for d in deliveries]}, headers={"Idempotent-Replayed": "true"})
     with Session(engine) as session:
-        session.add(newEvent)
+        newEvent = Event(
+            event_type=event.event_type,
+            payload=event.payload,
+            customer_id = current_customer.id
+        )
+        session.add(newEvent) 
+        session.flush()
+        #find all subscriptions an event has
+        matching_subscriptions = session.exec(select(Subscription).where(Subscription.customer_id == current_customer.id, Subscription.status == "active", Subscription.event_types.contains([event.event_type]))).all()
+        #deliver for every subscription
+        new_deliveries = []
+        for subscription in matching_subscriptions:
+            new_deliveries.append(Delivery(
+                event_id=newEvent.id,
+                subscription_id=subscription.id,
+                customer_id=current_customer.id,
+            ))
+        session.add_all(new_deliveries)
         session.commit()
-        session.refresh(newEvent)
-        claimed = r.set(idempotency_redis_key, str(newEvent.id), ex=86400, nx=True)
-        # winner branch
-        if claimed:  
-            r.lpush("relay:events:pending", str(newEvent.id))
-            EVENTS.inc()
-            return JSONResponse(status_code=202, content={"id": str(newEvent.id), "status": "queued"})
-        #loser branch
-        else: 
-            session.delete(newEvent)
-            session.commit()
-            existing_raw_key = r.get(idempotency_redis_key)
-            if not existing_raw_key:
-                raise HTTPException(
-                    status_code=500,
-                    detail="idempotency race resolution failed: winner key not found",
-                )
-            winner = UUID(existing_raw_key.decode())
-            current_status = session.exec(select(Event.status).where(Event.id == winner, Event.customer_id == current_customer.id)).first()
-            return JSONResponse(status_code=202, content={"id": str(winner), "status": current_status})
+        EVENTS.inc()
+        logger.info("event created", extra={"event_id": str(newEvent.id),"customer_id": str(current_customer.id), "event_type": event.event_type, "delivery_count": len(new_deliveries)})
+        delivery_ids = [str(d.id) for d in new_deliveries]
+        r.set(idempotency_redis_key, str(newEvent.id), ex=86400)
+        for d in new_deliveries:
+            r.lpush("deliveries", str(d.id))
+        return JSONResponse(status_code=202,content={"event_id": str(newEvent.id), "delivery_ids": delivery_ids})
 
 @app.get("/v1/events")
 async def list_events(current_customer: Annotated[None, Depends(verify_api_key)]):
     with Session(engine) as session:
         return session.exec(select(Event).where(Event.customer_id == current_customer.id)).all()
-
 
 @app.get("/v1/deadletter")
 async def list_dead_letter_events(current_customer: Annotated[Customer, Depends(verify_api_key)]):
@@ -143,24 +145,51 @@ async def create_customer( payload: CustomerCreate, _: Annotated[None, Depends(v
     customer_api_key = secrets.token_urlsafe(32)
     customer_webhook_secret = secrets.token_urlsafe(32)
     customer_api_key_hash = hashlib.sha256(customer_api_key.encode()).hexdigest()
-    
-    customer = Customer(
-        name=payload.name,
-        api_key_hash=customer_api_key_hash,
-        webhook_secret=customer_webhook_secret,
-    )
+    customer = Customer(name=payload.name,api_key_hash=customer_api_key_hash,webhook_secret=customer_webhook_secret,)
     with Session(engine) as session:
         session.add(customer)
         session.commit()
         session.refresh(customer)
+    return CustomerCreated(id=customer.id,name=customer.name,api_key=customer_api_key,webhook_secret=customer_webhook_secret,created_at=customer.created_at)
+
     
-    return CustomerCreated(
-        id=customer.id,
-        name=customer.name,
-        api_key=customer_api_key,
-        webhook_secret=customer_webhook_secret,
-        created_at=customer.created_at,
-    )
+
+@app.post("/v1/subscriptions", response_model=SubscriptionCreated, status_code=201)
+async def create_subscription(payload: SubscriptionCreate, current_customer: Annotated[Customer, Depends(verify_api_key)]):
+    subscription = Subscription(destination_url=payload.destination_url, event_types=payload.event_types, description=payload.description, customer_id = current_customer.id)
+    with Session(engine) as session:
+        session.add(subscription)
+        session.commit()
+        session.refresh(subscription)
+    return subscription
+
+@app.get("/v1/subscriptions", response_model=list[SubscriptionRead])
+async def get_subscriptions(current_customer: Annotated[Customer, Depends(verify_api_key)],):
+    with Session(engine) as session:
+        return session.exec(select(Subscription).where(Subscription.customer_id == current_customer.id, Subscription.status != SubscriptionStatusEnum.DISABLED)).all()
+    
+@app.get("/v1/subscriptions/{subscription_id}", response_model=SubscriptionRead)
+async def get_specific_subscription(subscription_id: UUID, current_customer: Annotated[Customer, Depends(verify_api_key)]):
+    with Session(engine) as session:
+        subscription = session.exec(select(Subscription).where(Subscription.customer_id == current_customer.id, Subscription.id == subscription_id)).first()
+        if not subscription or subscription.status == SubscriptionStatusEnum.DISABLED:
+            raise HTTPException(status_code=404, detail="not found")
+        return subscription
+
+@app.delete("/v1/subscriptions/{subscription_id}")
+async def delete_subscription(subscription_id: UUID, current_customer: Annotated[Customer, Depends(verify_api_key)]):
+    with Session(engine) as session:
+        subscription_to_delete = session.exec(select(Subscription).where(Subscription.customer_id == current_customer.id, Subscription.id == subscription_id)).first()
+        if not subscription_to_delete or subscription_to_delete.status == SubscriptionStatusEnum.DISABLED:
+            raise HTTPException(status_code=404, detail="not found")
+        subscription_to_delete.status = SubscriptionStatusEnum.DISABLED
+        session.commit()
+        return Response(status_code=204)
+
+@app.get("/v1/events")
+async def list_events(current_customer: Annotated[None, Depends(verify_api_key)]):
+    with Session(engine) as session:
+        return session.exec(select(Event).where(Event.customer_id == current_customer.id)).all()
 
 @app.get("/metrics")
 async def get_metrics():

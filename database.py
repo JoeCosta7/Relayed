@@ -67,6 +67,34 @@ class CustomerCreated(SQLModel):
     webhook_secret: str   # plaintext, shown only here
     created_at: datetime
 
+#For Request
+class SubscriptionCreate(SQLModel):
+    destination_url: str
+    event_types : list[str]
+    description : Optional[str] = None
+
+#For GET
+class SubscriptionRead(SQLModel):
+    id : UUID 
+    customer_id : UUID 
+    destination_url: str
+    event_types : list[str] 
+    description : Optional[str] = None
+    status : SubscriptionStatusEnum 
+    created_at: datetime 
+
+#For POST
+class SubscriptionCreated(SQLModel):
+    id : UUID
+    customer_id : UUID 
+    destination_url: str
+    event_types : list[str]
+    description : Optional[str] = None
+    webhook_secret: str 
+    status : SubscriptionStatusEnum 
+    created_at: datetime
+
+
 class Subscription(SQLModel, table=True):
     id : UUID = Field(default_factory=uuid4, primary_key=True)
     customer_id : UUID = Field(foreign_key="customer.id", index=True)
