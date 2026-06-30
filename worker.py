@@ -83,7 +83,6 @@ def process_delivery(delivery_id_str : str):
                 else:
                     was_retrying = deliveryItem.status == DeliveryStatusEnum.RETRYING
                     deliveryItem.status = DeliveryStatusEnum.DEAD_LETTERED
-                    deliveryItem.next_attempt_at = None
                     failure = DeadLetter(
                         event_id = event.id,
                         attempts = deliveryItem.attempts,

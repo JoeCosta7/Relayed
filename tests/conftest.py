@@ -43,11 +43,12 @@ def test_customer(clean_tables):
 @pytest.fixture(scope="function")
 def test_subscription(test_customer):
     customer_id = test_customer["customer"].id
-    destination_url = "https://example.com"
+    destination_url = "https://example.com/webhook"
+    event_types = ["test"]
     subscription = Subscription(
         customer_id = customer_id,
         destination_url = destination_url,
-        event_types = ["example"]
+        event_types = event_types
     )
     with Session(engine) as session: 
         session.add(subscription)
