@@ -8,9 +8,9 @@ from pathlib import Path
 import httpx
 from sqlalchemy import create_engine
 from sqlmodel import Session, select
-from database import Event, DeadLetter, Customer
+from database import Event, DeadLetter, Customer, Delivery, Subscription, SubscriptionStatusEnum, DeliveryStatusEnum
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from worker_metrics import DELIVERY_DURATION, RETRYING, DELIVERED, FAILED
 import json
 import hmac
@@ -24,65 +24,76 @@ redis_port = int(os.getenv("REDIS_PORT", "6379"))
 r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
 
 
-def retry(event : Event):
-    if event.status != 'retrying':
+def retry(delivery : Delivery):
+    if delivery.status != DeliveryStatusEnum.RETRYING:
         RETRYING.inc()
     #retry if failed initially
-    event.attempts += 1
-    event.status = 'retrying'
-    print(f"RETRY called - metrics:retrying now: {event.attempts}")
-    delay = (2 ** event.attempts) + random.uniform(0, 1)
-    event.next_attempt_at = datetime.now() + timedelta(seconds=delay)
-    r.lpush("relay:events:pending", str(event.id))
+    delivery.attempts += 1
+    delivery.status = DeliveryStatusEnum.RETRYING
+    print(f"RETRY called - metrics:retrying now: {delivery.attempts}")
+    delay = (2 ** delivery.attempts) + random.uniform(0, 1)
+    delivery.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+    r.lpush("relay:deliveries:pending", str(delivery.id))
 
-def process_event(event_id_str : str):
+def process_delivery(delivery_id_str : str):
     with Session(engine) as session:
-        dbItem = session.exec(select(Event).where(Event.id == UUID(event_id_str))).first()
-        if dbItem is None:
-            print(f"Event {event_id_str} not found — skipping")
+        deliveryItem = session.exec(select(Delivery).where(Delivery.id == UUID(delivery_id_str))).first()
+        if deliveryItem is None:
+            print(f"Event {delivery_id_str} not found — skipping")
             return
-        customer = session.exec(select(Customer).where(Customer.id == dbItem.customer_id)).first()
+        customer = session.exec(select(Customer).where(Customer.id == deliveryItem.customer_id)).first()
         if customer is None:
-            print(f"Event {dbItem.id} has no customer — skipping")
+            print(f"Event {deliveryItem.id} has no customer — skipping")
             return
-        print(f"Processing event {dbItem.id}, status: {dbItem.status}, attempts: {dbItem.attempts}")
-        payload = dbItem.payload
-        destination_url = dbItem.destination_url
-        if dbItem.next_attempt_at and datetime.now() < dbItem.next_attempt_at:
-            r.lpush("relay:events:pending", str(dbItem.id))
+        subscription = session.exec(select(Subscription).where(deliveryItem.subscription_id == Subscription.id)).first()
+        if subscription is None or subscription.status == SubscriptionStatusEnum.DISABLED:
+            print(f"Event {deliveryItem.id} has no subscription — skipping")
+            return
+        destination_url = subscription.destination_url
+        event = session.exec(select(Event).where(Event.id == deliveryItem.event_id)).first()
+        if event is None:
+            print(f"Event {deliveryItem.id} has no event — skipping")
+            return
+        print(f"Processing event {deliveryItem.id}, status: {deliveryItem.status}, attempts: {deliveryItem.attempts}")
+        payload = event.payload
+        if deliveryItem.next_attempt_at and datetime.now(timezone.utc) < deliveryItem.next_attempt_at:
+            r.lpush("relay:deliveries:pending", str(delivery_id_str))
             time.sleep(0.5)
             return
         try:
-            secret = customer.webhook_secret.encode()
+            secret = subscription.webhook_secret.encode()
             byte_data = json.dumps(payload).encode("utf-8")
             signature = hmac.new(secret, byte_data, digestmod="sha256").hexdigest()
             with DELIVERY_DURATION.time():
                 response = httpx.post(destination_url, content=byte_data, headers={"X-Relay-Signature" : signature, "Content-Type" : "application/json"})
             #Update event status based on response
             if 200 <= response.status_code < 300:
-                was_retrying = dbItem.status == 'retrying'  # check BEFORE changing
-                dbItem.status = 'delivered'
-                session.add(dbItem)
+                was_retrying = deliveryItem.status == DeliveryStatusEnum.RETRYING  # check BEFORE changing
+                deliveryItem.status = DeliveryStatusEnum.DELIVERED
+                session.add(deliveryItem)
                 session.commit()
                 DELIVERED.inc()
                 if was_retrying:
                     RETRYING.dec()
             else:
-                if dbItem.attempts < 5:
-                    retry(dbItem)  # handles status = 'retrying' and metrics:retrying increment
-                    session.add(dbItem)
+                if deliveryItem.attempts < 5:
+                    retry(deliveryItem)  # handles status = 'retrying' and metrics:retrying increment
+                    session.add(deliveryItem)
                     session.commit()
                 else:
-                    was_retrying = dbItem.status == 'retrying'
-                    dbItem.status = 'failed'
+                    was_retrying = deliveryItem.status == DeliveryStatusEnum.RETRYING
+                    deliveryItem.status = DeliveryStatusEnum.DEAD_LETTERED
+                    deliveryItem.next_attempt_at = None
                     failure = DeadLetter(
-                        event_id = dbItem.id,
-                        attempts = dbItem.attempts,
+                        event_id = event.id,
+                        attempts = deliveryItem.attempts,
                         status_code = response.status_code,
                         response_body = response.text,
-                        customer_id = dbItem.customer_id
+                        customer_id = event.customer_id,
+                        subscription_id=subscription.id,
+                        delivery_id = deliveryItem.id
                     )
-                    session.add(dbItem)
+                    session.add(deliveryItem)
                     session.add(failure)
                     session.commit()
                     FAILED.inc()
@@ -90,20 +101,22 @@ def process_event(event_id_str : str):
                         RETRYING.dec()
         except Exception as e:
                 print("Error sending event:", e)
-                if dbItem.attempts < 5:
-                    retry(dbItem)
-                    session.add(dbItem)
+                if deliveryItem.attempts < 5:
+                    retry(deliveryItem)
+                    session.add(deliveryItem)
                     session.commit()
                 else:
-                    was_retrying = dbItem.status == 'retrying'
-                    dbItem.status = 'failed'
+                    was_retrying = deliveryItem.status == DeliveryStatusEnum.RETRYING
+                    deliveryItem.status = DeliveryStatusEnum.DEAD_LETTERED
                     failure = DeadLetter(
-                        event_id = dbItem.id,
-                        attempts = dbItem.attempts,
+                        event_id = event.id,
+                        attempts = deliveryItem.attempts,
                         error_message = str(e),
-                        customer_id = dbItem.customer_id
+                        customer_id = event.customer_id,
+                        subscription_id=subscription.id,
+                        delivery_id = deliveryItem.id
                     )
-                    session.add(dbItem)
+                    session.add(deliveryItem)
                     session.add(failure)
                     session.commit()
                     FAILED.inc()
@@ -112,14 +125,17 @@ def process_event(event_id_str : str):
 
 
 def worker():
-# Worker loop for processing events
     start_http_server(8001)
     while True:
-        try: 
-            event = r.brpop("relay:events:pending", timeout=30)
+        try:
+            event = r.brpop("relay:deliveries:pending", timeout=30)
             if event is None:
                 continue
-            process_event(event[1])
+            try:
+                process_delivery(event[1])
+            except Exception as e:
+                print(f"Failed processing delivery {event[1]}: {e}")
+                # don't re-enqueue, don't crash — just log and continue
         except redis.exceptions.TimeoutError:
             continue
         except redis.exceptions.ConnectionError:

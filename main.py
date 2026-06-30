@@ -102,7 +102,7 @@ async def create_event(event: EventBase, current_customer: Annotated[Customer, D
         delivery_ids = [str(d.id) for d in new_deliveries]
         r.set(idempotency_redis_key, str(newEvent.id), ex=86400)
         for d in new_deliveries:
-            r.lpush("deliveries", str(d.id))
+            r.lpush("relay:deliveries:pending", str(d.id))
         return JSONResponse(status_code=202,content={"event_id": str(newEvent.id), "delivery_ids": delivery_ids})
 
 @app.get("/v1/events")
@@ -137,7 +137,7 @@ async def replay_dead_letter(dl_id: UUID, current_customer: Annotated[Customer, 
         associated_event.next_attempt_at = None
         deadletter.replayed_at = datetime.now()
         session.commit()
-        r.lpush("relay:events:pending", str(associated_event.id))
+        r.lpush("relay:deliveries:pending", str(associated_event.id))
         return f'Retrying event {associated_event.id}'
 
 @app.post("/v1/customers", response_model=CustomerCreated)

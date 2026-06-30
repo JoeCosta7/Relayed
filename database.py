@@ -1,9 +1,9 @@
 from sqlmodel import Field, SQLModel, create_engine, Session, select
 import os
-from sqlalchemy import Column, DateTime, ARRAY, String
+from sqlalchemy import Column, DateTime, String
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from uuid import UUID, uuid4
 from dotenv import load_dotenv
 from pathlib import Path

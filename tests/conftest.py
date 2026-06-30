@@ -9,7 +9,7 @@ import pytest
 from sqlmodel import Session, SQLModel
 from sqlalchemy import text
 from database import engine
-from database import Customer
+from database import Customer, Subscription
 import secrets
 import hashlib
 
@@ -39,3 +39,18 @@ def test_customer(clean_tables):
         session.commit() 
         session.refresh(customer)
     return {"customer": customer, "api_key": api_key}
+
+@pytest.fixture(scope="function")
+def test_subscription(test_customer):
+    customer_id = test_customer["customer"].id
+    destination_url = "https://example.com"
+    subscription = Subscription(
+        customer_id = customer_id,
+        destination_url = destination_url,
+        event_types = ["example"]
+    )
+    with Session(engine) as session: 
+        session.add(subscription)
+        session.commit() 
+        session.refresh(subscription)
+    return subscription

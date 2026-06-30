@@ -4,7 +4,7 @@ from sqlmodel import Session
 from main import engine
 from sqlmodel import Session, select 
 from database import Event, DeadLetter
-from worker import process_event
+from worker import process_delivery
 
 @respx.mock
 def test_successful_delivery(test_customer):
@@ -17,7 +17,7 @@ def test_successful_delivery(test_customer):
         session.refresh(event)
         event_id = event.id
 
-    process_event(str(event_id))
+    process_delivery(str(event_id))
 
     with Session(engine) as session:
         updated_event = session.get(Event, event_id)
