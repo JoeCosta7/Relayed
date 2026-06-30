@@ -106,7 +106,7 @@ async def create_event(event: EventBase, current_customer: Annotated[Customer, D
         return JSONResponse(status_code=202,content={"event_id": str(newEvent.id), "delivery_ids": delivery_ids})
 
 @app.get("/v1/events")
-async def list_events(current_customer: Annotated[None, Depends(verify_api_key)]):
+async def list_events(current_customer: Annotated[Customer, Depends(verify_api_key)]):
     with Session(engine) as session:
         return session.exec(select(Event).where(Event.customer_id == current_customer.id)).all()
 
