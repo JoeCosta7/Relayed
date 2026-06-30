@@ -5,12 +5,12 @@ from fastapi.responses import JSONResponse, Response
 from typing import Annotated
 import redis
 import secrets
-from database import Event, EventBase, DeadLetter, Customer, CustomerCreated, CustomerCreate, Subscription,  SubscriptionCreate, SubscriptionCreated, SubscriptionRead, Delivery, SubscriptionStatusEnum, engine, create_db_and_tables
+from database import Event, EventBase, DeadLetter, Customer, CustomerCreated, CustomerCreate, Subscription,  SubscriptionCreate, SubscriptionCreated, SubscriptionRead, Delivery, DeliveryStatusEnum, SubscriptionStatusEnum, engine, create_db_and_tables
 from sqlmodel import Session, select
 from app_metrics import EVENTS
 import os
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import logging
 
@@ -116,9 +116,8 @@ async def list_dead_letter_events(current_customer: Annotated[Customer, Depends(
         #finds ones that haven't been resolved
         return session.exec(select(DeadLetter).where(DeadLetter.replayed_at == None, DeadLetter.customer_id == current_customer.id)).all()
 
-@app.post("/v1/deadletter/{dl_id}/replay")
+@app.post("/v1/deadletter/{dl_id}/replay", status_code=202)
 async def replay_dead_letter(dl_id: UUID, current_customer: Annotated[Customer, Depends(verify_api_key)]):
-
     with Session(engine) as session:
         deadletter = session.exec(select(DeadLetter).where(DeadLetter.id == dl_id, DeadLetter.customer_id == current_customer.id)).first()
         if deadletter is None:
@@ -131,14 +130,30 @@ async def replay_dead_letter(dl_id: UUID, current_customer: Annotated[Customer, 
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"DeadLetter Event with ID: {dl_id} was already replayed"
             )
-        associated_event = session.exec(select(Event).where(Event.id == deadletter.event_id)).first()
-        associated_event.status = 'pending'
-        associated_event.attempts = 0
-        associated_event.next_attempt_at = None
-        deadletter.replayed_at = datetime.now()
+        subscription = session.exec(select(Subscription).where(Subscription.id == deadletter.subscription_id)).first()
+        if deadletter.subscription_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Subscription ID: {subscription.id} does not exist"
+            )
+        if subscription.status == SubscriptionStatusEnum.DISABLED:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Subscription no longer active"
+            )
+        new_delivery = Delivery(
+            event_id=deadletter.event_id,
+            subscription_id=deadletter.subscription_id,
+            customer_id=deadletter.customer_id,
+            status = DeliveryStatusEnum.PENDING, 
+            attempts = 0,
+        )
+        session.add(new_delivery) 
+        deadletter.replayed_at = datetime.now(timezone.utc)
         session.commit()
-        r.lpush("relay:deliveries:pending", str(associated_event.id))
-        return f'Retrying event {associated_event.id}'
+        r.lpush("relay:deliveries:pending", str(new_delivery.id))
+        return {"delivery_ids": [new_delivery.id]}
+
 
 @app.post("/v1/customers", response_model=CustomerCreated)
 async def create_customer( payload: CustomerCreate, _: Annotated[None, Depends(verify_admin_key)], ):
