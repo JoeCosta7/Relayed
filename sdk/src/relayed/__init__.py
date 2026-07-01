@@ -6,7 +6,10 @@ from relayed._errors import (
     RelayedConflictError,
     RelayedClientError,
     RelayedServerError,
+    RelayedTimestampError,
+    RelayedSignatureError
 )
+from relayed._webhooks import verify_webhook
 
 __all__ = [
     "RelayedClient",
@@ -16,6 +19,9 @@ __all__ = [
     "RelayedConflictError",
     "RelayedClientError",
     "RelayedServerError",
+    "RelayedTimestampError",
+    "RelayedSignatureError",
+    "verify_webhook"
 ]
 
 from importlib.metadata import version

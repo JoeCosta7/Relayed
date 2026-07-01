@@ -63,9 +63,11 @@ def process_delivery(delivery_id_str : str):
         try:
             secret = subscription.webhook_secret.encode()
             byte_data = json.dumps(payload).encode("utf-8")
-            signature = hmac.new(secret, byte_data, digestmod="sha256").hexdigest()
+            timestamp = str(int(datetime.now(timezone.utc).timestamp())).encode("utf-8")
+            signed_payload = timestamp + b"." + byte_data
+            signature = hmac.new(secret, signed_payload, digestmod="sha256").hexdigest()
             with DELIVERY_DURATION.time():
-                response = httpx.post(destination_url, content=byte_data, headers={"X-Relay-Signature" : signature, "Content-Type" : "application/json"})
+                response = httpx.post(destination_url, content=byte_data, headers={"X-Relay-Signature" : signature, "X-Relay-Timestamp": timestamp.decode("utf-8"), "Content-Type" : "application/json"})
             #Update event status based on response
             if 200 <= response.status_code < 300:
                 was_retrying = deliveryItem.status == DeliveryStatusEnum.RETRYING  # check BEFORE changing

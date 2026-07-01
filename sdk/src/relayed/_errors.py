@@ -21,3 +21,8 @@ class RelayedClientError(RelayedError):
 class RelayedServerError(RelayedError):
     """5xx — something went wrong on Relayed's end."""
 
+class RelayedTimestampError(RelayedError):
+    """Raised when the timestamp of the webhook is outside the allowed tolerance."""
+
+class RelayedSignatureError(RelayedError):
+    """Raised when the signature of the webhook does not match the expected signature."""
