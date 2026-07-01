@@ -1,19 +1,24 @@
 name: Publish Python 🐍 distribution 📦 to PyPI
 
-on: 
+on:
   push:
     tags:
-      - '*'
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
+  test:
+    uses: ./.github/workflows/testing.yml
   build:
     name: Build distribution 📦
+    needs: [test]
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
+        fetch-depth: 0  # hatch-vcs needs full history + tags to derive the version
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -22,21 +27,66 @@ jobs:
       run: >-
         python3 -m
         pip install
-        build
+        hatch
         --user
     - name: Build a binary wheel and a source tarball
-      run: python3 -m build
+      working-directory: sdk
+      run: hatch build --clean  # --clean wipes dist/ first so no stale artifacts get published
     - name: Store the distribution packages
       uses: actions/upload-artifact@v4
       with:
         name: python-package-distributions
-        path: dist/
+        path: sdk/dist/
+
+  publish-to-testpypi:
+    name: Publish Python 🐍 distribution 📦 to TestPyPI
+    needs:
+      - build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/relayed
+
+    permissions:
+      id-token: write  # IMPORTANT: mandatory for trusted publishing
+
+    steps:
+      - name: Download all the dists
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: sdk/dist/
+      - name: Publish distribution 📦 to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  verify-testpypi:
+    name: Verify the package on TestPyPI
+    needs:
+      - publish-to-testpypi
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install the package from TestPyPI
+        run: |
+          for i in 1 2 3 4 5 6; do
+            python3 -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ "relayed==${GITHUB_REF_NAME#v}" && exit 0
+            echo "Package not indexed on TestPyPI yet, retrying in 15s ($i/6)"
+            sleep 15
+          done
+          echo "Package never became installable from TestPyPI" && exit 1
+      - name: Verify RelayedClient import
+        run: python3 -c "from relayed import RelayedClient; assert RelayedClient.__module__ == 'relayed._client', RelayedClient.__module__"
+      - name: Verify package version
+        run: python3 -c "import relayed; assert relayed.__version__ == '${GITHUB_REF_NAME#v}', relayed.__version__"
 
   publish-to-pypi:
     name: >-
       Publish Python 🐍 distribution 📦 to PyPI
     needs:
-    - build
+    - verify-testpypi
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -49,31 +99,6 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: python-package-distributions
-        path: dist/
+        path: sdk/dist/
     - name: Publish distribution 📦 to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
-
-    
-  publish-to-testpypi:
-    name: Publish Python 🐍 distribution 📦 to TestPyPI
-    needs:
-    - build
-    runs-on: ubuntu-latest
-
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/relayed
-
-    permissions:
-      id-token: write  # IMPORTANT: mandatory for trusted publishing
-
-    steps:
-    - name: Download all the dists
-      uses: actions/download-artifact@v6
-      with:
-        name: python-package-distributions
-        path: dist/
-    - name: Publish distribution 📦 to TestPyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        repository-url: https://test.pypi.org/legacy/
