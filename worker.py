@@ -23,6 +23,10 @@ redis_host = os.getenv("REDIS_HOST", "redis")
 redis_port = int(os.getenv("REDIS_PORT", "6379"))
 r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
 
+def sign_payload(secret: str, body: bytes, timestamp: int) -> str:
+    signed_payload = str(timestamp).encode("utf-8") + b"." + body
+    return hmac.new(secret.encode(), signed_payload, digestmod="sha256").hexdigest()
+
 
 def retry(delivery : Delivery):
     if delivery.status != DeliveryStatusEnum.RETRYING:
@@ -61,13 +65,11 @@ def process_delivery(delivery_id_str : str):
             time.sleep(0.5)
             return
         try:
-            secret = subscription.webhook_secret.encode()
             byte_data = json.dumps(payload).encode("utf-8")
-            timestamp = str(int(datetime.now(timezone.utc).timestamp())).encode("utf-8")
-            signed_payload = timestamp + b"." + byte_data
-            signature = hmac.new(secret, signed_payload, digestmod="sha256").hexdigest()
+            timestamp_int = int(datetime.now(timezone.utc).timestamp())
+            signature = sign_payload(secret=subscription.webhook_secret,body=byte_data,timestamp=timestamp_int)
             with DELIVERY_DURATION.time():
-                response = httpx.post(destination_url, content=byte_data, headers={"X-Relay-Signature" : signature, "X-Relay-Timestamp": timestamp.decode("utf-8"), "Content-Type" : "application/json"})
+                response = httpx.post(destination_url, content=byte_data, headers={"X-Relay-Signature" : signature, "X-Relay-Timestamp": str(timestamp_int), "Content-Type" : "application/json"})
             #Update event status based on response
             if 200 <= response.status_code < 300:
                 was_retrying = deliveryItem.status == DeliveryStatusEnum.RETRYING  # check BEFORE changing
