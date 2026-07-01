@@ -1,5 +1,5 @@
-from sdk.src.relayed._client import RelayedClient
-from sdk.src.relayed._errors import (
+from relayed._client import RelayedClient
+from relayed._errors import (
     RelayedError,
     RelayedAuthError,
     RelayedNotFoundError,
