@@ -5,12 +5,14 @@ from fastapi.responses import JSONResponse, Response
 from typing import Annotated
 import redis
 import secrets
-from database import Event, EventBase, DeadLetter, Customer, CustomerCreated, CustomerCreate, Subscription,  SubscriptionCreate, SubscriptionCreated, SubscriptionRead, Delivery, DeliveryStatusEnum, SubscriptionStatusEnum, engine, create_db_and_tables
-from sqlmodel import Session, select
+from database import (Event, EventBase, DeadLetter, Customer, CustomerCreated, CustomerCreate, Subscription,  SubscriptionCreate, 
+SubscriptionCreated, SubscriptionRead, Delivery, DeliveryStatusEnum, SubscriptionStatusEnum, KeyRotated, KeyRotateRequest, engine, create_db_and_tables)
+from sqlmodel import Session, select, or_
+from sqlalchemy import or_
 from app_metrics import EVENTS
 import os
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import logging
 
@@ -37,13 +39,25 @@ async def root():
 async def verify_api_key(credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)]):
     with Session(engine) as session:
         incoming_hash = hashlib.sha256(credentials.credentials.encode("utf8")).hexdigest()
-        customer = session.exec(select(Customer).where(Customer.api_key_hash == incoming_hash)).first()
+        customer = session.exec(
+            select(Customer).where(
+                or_(Customer.api_key_hash == incoming_hash, Customer.previous_api_key_hash == incoming_hash)
+            )
+        ).first()
     if customer is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect API KEY",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect API KEY",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    if customer.api_key_hash == incoming_hash:
+        return customer
+    if customer.previous_api_key_expires_at is None or customer.previous_api_key_expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect API KEY",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
     return customer
 
 
@@ -64,6 +78,18 @@ async def verify_admin_key(credentials: Annotated[HTTPAuthorizationCredentials, 
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+@app.post("/v1/keys/rotate", response_model=KeyRotated, status_code=200)
+async def rotate_keys(current_customer: Annotated[Customer, Depends(verify_api_key)], request: KeyRotateRequest = KeyRotateRequest()):
+    new_api_key = secrets.token_urlsafe(32)
+    new_api_key_hash = hashlib.sha256(new_api_key.encode()).hexdigest()
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=request.grace_period_seconds)
+    with Session(engine) as session:
+        customer = session.get(Customer, current_customer.id)
+        customer.previous_api_key_hash = customer.api_key_hash
+        customer.api_key_hash = new_api_key_hash
+        customer.previous_api_key_expires_at = expires_at
+        session.commit()
+    return {"api_key": new_api_key, "grace_period_expires_at": expires_at}
 
 
 @app.post("/v1/events")

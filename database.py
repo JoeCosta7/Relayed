@@ -52,6 +52,8 @@ class Customer(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str
     api_key_hash: str = Field(index=True, unique=True)
+    previous_api_key_hash: Optional[str] = Field(default=None, index=True)
+    previous_api_key_expires_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     webhook_secret: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True), nullable=False))
 
@@ -117,6 +119,13 @@ class Delivery(SQLModel, table=True):
     response_body: Optional[str] = None
     error_message: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True), nullable=False))
+
+class KeyRotateRequest(SQLModel):
+    grace_period_seconds: int = Field(default=86400, ge=0, le=604800)
+
+class KeyRotated(SQLModel):
+    api_key: str  # plaintext, shown once
+    grace_period_expires_at: datetime
 
 
 engine = create_engine(DATABASE_URL, echo=True)
