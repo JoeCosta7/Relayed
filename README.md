@@ -1,36 +1,63 @@
 # Relayed
 
-Relayed is a webhooks delivery service that ensures safe and efficient webhook delivery. The system uses HMAC-signed payloads and API key auth for security and exponential backoff with idempotency-key deduplication to provide reliable delivery under failure.
+Relayed is a multi-tenant webhook service built with FastAPI, Postgres, and Redis that ensures safe and efficient delivery. The system uses HMAC-signed payloads, per-tenant rate limiting, and exponential backoff retries with idempotency-key deduplication to provide reliable delivery under failure.
 
-## Dashboard 
-
-![Grafana Dashboard](docs/dashboard.png)
-
-Real-time metrics exposed via Prometheus and visualized in Grafana: events accepted, deliveries succeeded/failed, retry queue depth, and end-to-end delivery latency. Load-tested at 2,000 concurrent requests.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Client[Client / SDK] --> Nginx[Nginx]
-    Nginx --> FastAPI[FastAPI]
-    FastAPI -->|writes event| Postgres[(Postgres)]
-    FastAPI -->|pushes ID| Redis[(Redis)]
-    Redis -->|pops ID| Worker[Worker]
-    Postgres -->|loads event| Worker
-    Worker -->|HMAC-signed POST| Destination[Destination]
-    
-    FastAPI -.->|/metrics| Prometheus[Prometheus]
-    Worker -.->|/metrics| Prometheus
-    Prometheus --> Grafana[Grafana]
+    Client[Customer app]
+    API["FastAPI<br/>auth · rate limit · dedupe"]
+    Redis[("Redis<br/>idempotency · buckets · queue")]
+    DB[("PostgreSQL<br/>events · deliveries · DLQ")]
+    Worker["Worker<br/>sign · POST · retry"]
+    Dest[Webhook endpoint]
+    Prom[Prometheus]
+    Graf[Grafana]
+
+    Client -- "POST /v1/events" --> API
+    API --> DB
+    API <--> Redis
+    Redis -- "BRPOP" --> Worker
+    Worker --> DB
+    Worker -- "POST + HMAC" --> Dest
+    Worker -. "retry (backoff)" .-> Redis
+    API -.-> Prom
+    Worker -.-> Prom
+    Prom --> Graf
 ```
+Events are ingested by the FastAPI service, which authenticates the caller, checks the per-tenant rate limit, and deduplicates by idempotency key. The event is persisted alongside a `Delivery` row per matching subscription, then delivery IDs are pushed onto a Redis queue. A worker consumes the queue, signs the payload with HMAC-SHA256, POSTs to the subscription's destination, and retries with exponential backoff on failure. After the retry budget is exhausted, the delivery is written to the dead letter queue for manual replay.
+
+## Features
+
+- **HMAC-signed payloads**: every webhook signed with per-subscription secret using HMAC-SHA256
+- **Per-tenant rate limiting**: token bucket algorithm implemented as a Redis Lua script with multiple tier options
+- **Idempotency**: `Idempotency-Key` header deduplication via Redis `SET NX`, namespaced per tenant.
+- **Exponential backoff retries**: worker retries failed deliveries with exponential backoff and jitter
+- **Dead letter replay**: failed deliveries surface via `GET /v1/deadletter` and can be re-queued via `POST /v1/deadletter/{id}/replay`.
+- **API key rotation**: `POST /v1/keys/rotate` issues a new key
+- **Observability**: Prometheus metrics for delivery attempts, successes, failures, retries, and per-delivery latency, with Grafana dashboards.
+- **Python SDK**: `pip install relayed` 
+
 
 ## SDK Usage
 
 ```python
-import Relayed
-relayed = Relayed(api_key=..., base_url=...)
-relayed.send_event(destination_url=..., event_type=..., payload={...})
+from relayed import RelayedClient
+
+client = RelayedClient(api_key=..., base_url=...)
+
+subscription = client.create_subscription(
+    destination_url="https://your-destination.example.com/webhook",
+    event_types=["test.event"],
+)
+
+client.send_event(
+    event_type="test.event",
+    payload={"message": "test"},
+    idempotency_key="some-unique-key",
+)
 ```
 
 ## Curl Example
