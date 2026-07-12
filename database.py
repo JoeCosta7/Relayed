@@ -1,13 +1,13 @@
 from sqlmodel import Field, SQLModel, create_engine, Session, select
 import os
-from sqlalchemy import Column, DateTime, String
+from sqlalchemy import Column, DateTime, String, Enum as SQLEnum
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from uuid import UUID, uuid4
 from dotenv import load_dotenv
 from pathlib import Path
-import redis
+import redis_client
 import secrets
 from enum import Enum
 
@@ -25,6 +25,17 @@ class DeliveryStatusEnum(str, Enum):
     RETRYING = "retrying"
     DELIVERED = "delivered"
     DEAD_LETTERED = "dead_lettered"
+
+class TierEnum(str, Enum):
+    FREE = "free"
+    PRO = 'pro'
+    ENTERPRISE = "enterprise"
+
+TIER_LIMITS = {
+    TierEnum.FREE: (60, 1),       
+    TierEnum.PRO: (600, 10),
+    TierEnum.ENTERPRISE: (6000, 100),
+}
 
 class DeadLetter(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -56,6 +67,7 @@ class Customer(SQLModel, table=True):
     previous_api_key_expires_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     webhook_secret: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True), nullable=False))
+    tier: TierEnum = Field(default=TierEnum.FREE, sa_column=Column(SQLEnum(TierEnum), nullable=False))
 
     # Request: what the admin sends
 class CustomerCreate(SQLModel):
@@ -129,8 +141,6 @@ class KeyRotated(SQLModel):
 
 
 engine = create_engine(DATABASE_URL, echo=True)
-r = redis.Redis(host='redis', port=6379, decode_responses=True)
-
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)

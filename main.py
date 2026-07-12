@@ -3,7 +3,8 @@ from fastapi import FastAPI, Depends, HTTPException, status, Header, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, Response
 from typing import Annotated
-import redis
+from redis_client import r
+from rate_limit import check_rate_limit
 import secrets
 from database import (Event, EventBase, DeadLetter, Customer, CustomerCreated, CustomerCreate, Subscription,  SubscriptionCreate, 
 SubscriptionCreated, SubscriptionRead, Delivery, DeliveryStatusEnum, SubscriptionStatusEnum, KeyRotated, KeyRotateRequest, engine, create_db_and_tables)
@@ -18,9 +19,6 @@ import logging
 
 from prometheus_client import generate_latest,CONTENT_TYPE_LATEST
 
-redis_host = os.getenv("REDIS_HOST", "redis")
-redis_port = int(os.getenv("REDIS_PORT", "6379"))
-r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -51,13 +49,20 @@ async def verify_api_key(credentials: Annotated[HTTPAuthorizationCredentials, De
                 headers={"WWW-Authenticate": "Bearer"},
             )
     if customer.api_key_hash == incoming_hash:
-        return customer
-    if customer.previous_api_key_expires_at is None or customer.previous_api_key_expires_at <= datetime.now(timezone.utc):
+        pass
+    elif customer.previous_api_key_expires_at is None or customer.previous_api_key_expires_at <= datetime.now(timezone.utc):
         raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect API KEY",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+    is_allowed, retry_after = check_rate_limit(customer)
+    if not is_allowed:
+        raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded",
+                headers={"Retry-After": str(retry_after)},
+    )
     return customer
 
 

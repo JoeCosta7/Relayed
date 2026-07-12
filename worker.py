@@ -1,4 +1,5 @@
 import redis
+from redis_client import r 
 from dotenv import load_dotenv
 import time
 from prometheus_client import start_http_server
@@ -19,9 +20,6 @@ load_dotenv(Path(__file__).parent / ".env", override=False)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL, echo=True)
-redis_host = os.getenv("REDIS_HOST", "redis")
-redis_port = int(os.getenv("REDIS_PORT", "6379"))
-r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
 
 def sign_payload(secret: str, body: bytes, timestamp: int) -> str:
     signed_payload = str(timestamp).encode("utf-8") + b"." + body

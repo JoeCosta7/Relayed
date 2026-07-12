@@ -15,6 +15,9 @@ import hashlib
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_schema():
+    # Drop first so schema changes (e.g. new columns) are always reflected;
+    # create_all alone won't alter an already-existing table.
+    SQLModel.metadata.drop_all(engine)
     SQLModel.metadata.create_all(engine)
     yield
 
