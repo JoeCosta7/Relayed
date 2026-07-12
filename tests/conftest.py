@@ -9,7 +9,7 @@ import pytest
 from sqlmodel import Session, SQLModel
 from sqlalchemy import text
 from database import engine
-from database import Customer, Subscription
+from database import Customer, Subscription, TierEnum
 import secrets
 import hashlib
 
@@ -28,20 +28,30 @@ def clean_tables():
         session.commit()
 
 @pytest.fixture(scope="function")
-def test_customer(clean_tables):
-    api_key = secrets.token_urlsafe(32)
-    api_key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-    webhook_secret = secrets.token_urlsafe(32)
-    customer = Customer(
-        name="test-customer",
-        api_key_hash=api_key_hash,
-        webhook_secret=webhook_secret,
-    )
-    with Session(engine) as session: 
-        session.add(customer)
-        session.commit() 
-        session.refresh(customer)
-    return {"customer": customer, "api_key": api_key}
+def create_test_customer(clean_tables):
+    """Factory fixture: call create_test_customer() to make a tenant, once per customer needed."""
+    def _create(name: str | None = None, tier: TierEnum = TierEnum.FREE) -> dict:
+        if name is None:
+            name = f"test-customer-{secrets.token_hex(4)}"
+        api_key = secrets.token_urlsafe(32)
+        api_key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+        webhook_secret = secrets.token_urlsafe(32)
+        customer = Customer(
+            name=name,
+            api_key_hash=api_key_hash,
+            webhook_secret=webhook_secret,
+            tier=tier,
+        )
+        with Session(engine) as session:
+            session.add(customer)
+            session.commit()
+            session.refresh(customer)
+        return {"customer": customer, "api_key": api_key}
+    return _create
+
+@pytest.fixture(scope="function")
+def test_customer(create_test_customer):
+    return create_test_customer()
 
 @pytest.fixture(scope="function")
 def test_subscription(test_customer):
